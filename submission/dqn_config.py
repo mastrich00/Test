@@ -1,4 +1,4 @@
-BOARD_SIZE = 5
+BOARD_SIZE = 7
 NUM_EPISODES = 4000
 SELFPLAY_RATIO = 0.25  # 70% self-play, 30% vs base agents
 LEARNING_RATE = 1e-4        # Reduced from 1e-3
