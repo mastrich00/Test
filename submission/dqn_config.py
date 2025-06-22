@@ -1,0 +1,10 @@
+BOARD_SIZE = 5
+NUM_EPISODES = 4000
+SELFPLAY_RATIO = 0.25  # 70% self-play, 30% vs base agents
+LEARNING_RATE = 1e-4        # Reduced from 1e-3
+GRAD_CLIP = 1.0             # Tighter gradient clipping
+TAU = 0.005                  # Soft update parameter
+HUBER_DELTA = 1.0           # Huber loss parameter
+TARGET_HARD_UPDATE_INTERVAL = 500  # steps
+MOVE_PENALTY = -0.01
+WEIGHT_DECAY = 1e-5 
