@@ -269,7 +269,9 @@ def main():
     for episode in range(config.NUM_EPISODES):
         # Determine self-play ratio
         selfplay_ratio = 0.15 + 0.35 * min(1.0, episode / (config.NUM_EPISODES * 0.7))
-        use_selfplay = random.random() < selfplay_ratio
+        # use_selfplay = random.random() < selfplay_ratio
+        # Cap self-play ratio to prevent it from becoming too dominant too early
+        use_selfplay = random.random() < config.SELFPLAY_RATIO_MAX * min(1.0, episode / (config.NUM_EPISODES * config.SELFPLAY_RAMPUP_FRACTION))
         opponent = None if use_selfplay else random.choice(base_agents_list)
         nstep_buffer.buffer.clear()
         
@@ -322,12 +324,29 @@ def main():
             # reward = base_step_penalty * (1.0 + length_ratio)  # e.g. up to −0.06 near end
             done = False
             reward = config.MOVE_PENALTY # Apply move penalty for every non-terminal move
+
+            # --- NEW: Encourage straighter progress (per-move reward) ---
+            # In Hex, White (player=1) aims top<->bottom (row 0 to size-1)
+            # Black (player=-1) aims left<->right (col 0 to size-1)
+            # Reward moves that advance along the player's axis.
+            r, c = action # (row, col) of the just-made move
+            if prev_player == 1: # White just moved
+                # White wants to increase row index (closer to bottom edge)
+                # Scale from 0 to 1, then apply a small bonus
+                progress_reward = (r / (board_size - 1)) * config.AXIAL_PROGRESS_BONUS_SCALE
+                reward += progress_reward
+            elif prev_player == -1: # Black just moved
+                # Black wants to increase column index (closer to right edge)
+                progress_reward = (c / (board_size - 1)) * config.AXIAL_PROGRESS_BONUS_SCALE
+                reward += progress_reward
             
+            # --- NEW: Bonus for remaining empty cells (implicitly faster win) ---
+            # This is an alternative/complement to the WIN_EFFICIENCY_BONUS_SCALE
+            reward += ((max_moves - move_count) / max_moves) * config.EMPTY_CELLS_BONUS_SCALE
+
             if game.winner != 0:
                 # Game ended - determine final reward from DQN's perspective
                 if use_selfplay:
-                    # we need to know which “side” made this move:
-                    # assume prev_player was stored alongside prev_state
                     if game.winner == prev_player:
                         reward = 1
                     else:
@@ -351,58 +370,25 @@ def main():
                 
                 done = True
                 next_state = None
-            else:
+            else: # If game is not done, create the next_state tensor
                 next_state = board_to_tensor(game)
 
-            # # ——— encourage straighter progress ——
-            # # In Hex, White (player=1) aims top←→bottom, Black (player=-1) left←→right.
-            # # Reward moves that advance along your axis.
-            # if game.player == 1:
-            #     # white just moved to next_state, r,c index of last move:
-            #     r,c = action
-            #     # closer to bottom edge is better (bigger r)
-            #     reward += (r / (board_size-1)) * 0.02
-            # elif game.player == -1:
-            #     # black: closer to right edge is better (bigger c)
-            #     r,c = action
-            #     reward += (c / (board_size-1)) * 0.02
-
-            # # ——— New: extra bonus for winning faster ——
-            # # scale by fraction of empty board remaining
-            # remaining = max_moves - move_count
-            # reward += (remaining / max_moves) * 0.15
-            
-            # —— reward clipping & normalization —— 
-            # clip to [-1, +1]
-            #reward = max(-1.0, min(1.0, reward))
-            # update running stats on n-step returns before push
-            # ret_norm.update(reward)
-            # reward = ret_norm.normalize(reward)
-
-            total_reward += reward
+            total_reward += reward # Accumulate total reward for this episode's logging
             
             # Only store transitions for DQN's moves
+            # This condition ensures we credit DQN for the move it *just made* (prev_player)
+            # and record the transition to the *new* state (game.player's turn)
             is_dqn_move = use_selfplay or (game.player != prev_player and not use_selfplay)
             if is_dqn_move:
-                # memory.push(
-                #     prev_state,
-                #     scalar_action,
-                #     reward,
-                #     next_state,
-                #     done
-                # )
-                # push to n-step buffer first
+                # Push to n-step buffer first
                 tri = (prev_state, prev_player, scalar_action, reward, next_state, done)
                 ns_ret = nstep_buffer.push(tri)
                 if ns_ret is not None:
-                    # memory.push(*ns_ret)
-
                     # ns_ret = (state, prev_player, action, R_clipped, next_state, done)
-                    # normalize the raw R before storing
-                    _, _, a, R_raw, s1, d = ns_ret
-                    # Use the already clipped reward R_clipped from NStepBuffer
-                    ret_norm.update(R_raw) # Note: R_raw here is R_clipped from NStepBuffer
-                    R_norm = ret_norm.normalize(R_raw) # Normalize the clipped value
+                    # Normalize the raw R_clipped before storing in replay memory
+                    _, _, a, R_clipped_from_buffer, s1, d = ns_ret # Unpack R_clipped from NStepBuffer
+                    ret_norm.update(R_clipped_from_buffer) # Update RunningNorm with the clipped value
+                    R_norm = ret_norm.normalize(R_clipped_from_buffer) # Normalize the clipped value
                     memory.push(ns_ret[0], ns_ret[2], R_norm, ns_ret[4], ns_ret[5])
             
             # Optimize model and track loss
@@ -411,43 +397,40 @@ def main():
                 scheduler.step()
                 losses.append(loss_value)
                 
-                # Soft update of the target network - CRITICAL FIX
+                # Soft update of the target network
                 soft_update(target_net, policy_net, config.TAU)
             
             steps_done += 1
 
-        # flush any remaining partial returns (length < n)
-        # for k = 1 .. len(buffer)-1, emit k-step returns
+        # Flush any remaining partial returns (length < n) from the N-step buffer
         leftover = list(nstep_buffer.buffer)
-        for k in range(1, len(leftover)+1):
+        for k in range(1, len(leftover) + 1):
             seq = leftover[:k]
-            # compute raw k-step return
-            R_raw = sum((GAMMA**i)*seq[i][3] for i in range(len(seq)))
-            R_clipped = R_raw# max(-1.0, min(1.0, R_raw))
-            # unpack first and last of this subsequence
+            # Compute raw k-step return from this subsequence
+            R_raw = sum((GAMMA**i) * seq[i][3] for i in range(len(seq)))
+            R_clipped = max(-1.0, min(1.0, R_raw)) # Ensure clipping for leftovers
+
+            # Unpack first and last elements for the transition
             state, prev_player, action, _, _, _ = seq[0]
-            _, _, _, _, next_state, done = seq[-1]
-            # normalize & push
-            ret_norm.update(R_clipped) # Ensure R_clipped is used here if you want consistency
-            R_norm = ret_norm.normalize(R_clipped) # Ensure R_clipped is used here if you want consistency
-            memory.push(state, action, R_norm, next_state, done) 
-        # finally clear the buffer
+            _, _, _, _, next_state_k, done_k = seq[-1] # next_state and done for this k-step sequence
+            
+            # Normalize & push
+            ret_norm.update(R_clipped)
+            R_norm = ret_norm.normalize(R_clipped)
+            memory.push(state, action, R_norm, next_state_k, done_k) # Use next_state_k and done_k
+        # Finally clear the buffer
         nstep_buffer.buffer.clear()
 
         # Track episode results
         episode_rewards.append(total_reward)
-        win_rates.append(1 if total_reward > 0 else 0)
-        
-        # # Update target network periodically
-        # if episode % TARGET_UPDATE == 0:
-        #     target_net.load_state_dict(policy_net.state_dict())
+        win_rates.append(1 if total_reward > 0 else 0) # This is the internal "positive reward rate"
         
         # Log progress
-        if episode % 10 == 0:
+        if episode % 10 == 0: # Log every 10 episodes
             # Calculate metrics
-            avg_reward = sum(episode_rewards[-100:]) / min(len(episode_rewards[-100:]), 100)
+            avg_reward = sum(episode_rewards[-100:]) / min(len(episode_rewards), 100) # Use actual number of episodes if <100
             avg_loss = sum(losses) / len(losses) if losses else 0
-            win_rate = sum(win_rates) / len(win_rates) * 100 if win_rates else 0
+            win_rate_log = sum(win_rates) / len(win_rates) * 100 if win_rates else 0 # Internal win rate
             
             # Calculate elapsed time and estimated time remaining
             elapsed_time = time.time() - start_time
@@ -463,25 +446,31 @@ def main():
                   f"Epsilon: {eps_threshold:.4f} | "
                   f"Reward: {total_reward:.2f} | "
                   f"Avg Reward: {avg_reward:.4f} | "
-                  f"Win Rate: {win_rate:.2f}% | "
+                  f"Internal Win Rate: {win_rate_log:.2f}% | " # Renamed for clarity
                   f"Avg Loss: {avg_loss:.6f} | "
                   f"Memory Size: {len(memory)} | "
                   f"Remaining: {remaining_time}")
             
             # Save model checkpoint and evaluate
-            if episode % 100 == 0:
+            if episode % 100 == 0: # Evaluate every 100 episodes
+                # Create models directory if it doesn't exist
+                if not os.path.exists("models"):
+                    os.makedirs("models")
                 torch.save(policy_net.state_dict(), os.path.join("models", f"dqn_{episode}.pth"))
 
                 # Evaluate against base agents
                 if base_agents_list:
-                    eval_results = evaluate_against_base_agents(policy_net, base_agents_list)
-                    print("Evaluation against base agents:")
+                    eval_results = evaluate_against_base_agents(policy_net, base_agents_list, num_games=50) # Increased num_games
+                    print("--- Evaluation against base agents ---")
                     for agent_name, win_rate in eval_results.items():
                         print(f"  {agent_name}: {win_rate:.1%}")
+                    print("------------------------------------")
                 else:
                     print("Warning: Base agents list is empty. Skipping evaluation.")
     
     # Save final model
+    if not os.path.exists("models"):
+        os.makedirs("models")
     torch.save(policy_net.state_dict(), os.path.join("models", "dqn_final.pth"))
     print("Training completed. Final model saved.")
 
