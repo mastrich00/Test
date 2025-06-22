@@ -146,7 +146,7 @@ def optimize_model(memory, policy_net, target_net, optimizer):
     
     # Filter out None states
     non_final_mask = torch.tensor([s is not None for s in batch[3]], dtype=torch.bool)
-    non_final_next_states = torch.stack([s for s in batch[3] if s is not None])
+    non_final_next_states = torch.stack([s for s in batch[3] if s is not None]).to(device)
     
     state_batch = torch.stack(batch[0]).to(device)
     action_batch = torch.tensor(batch[1], dtype=torch.long, device=device)
