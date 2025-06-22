@@ -148,7 +148,7 @@ def optimize_model(memory, policy_net, target_net, optimizer):
     non_final_mask = torch.tensor([s is not None for s in batch[3]], dtype=torch.bool)
     non_final_next_states = torch.stack([s for s in batch[3] if s is not None])
     
-    state_batch = torch.stack(batch[0])
+    state_batch = torch.stack(batch[0]).to(device)
     action_batch = torch.tensor(batch[1], dtype=torch.long, device=device)
     reward_batch = torch.tensor(batch[2], dtype=torch.float, device=device)
     done_batch = torch.tensor(batch[4], dtype=torch.float, device=device)
