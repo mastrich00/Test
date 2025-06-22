@@ -10,7 +10,7 @@ game = engine.hexPosition()
 #this is how your agent can be imported
 #'submission' is the (sub)package that you provide
 #please use a better name that identifies your group
-from submission.facade import agent
+from submission.dqn_facade import agent
 
 #make sure that the agent you have provided is such that the following three
 #method-calls are error-free and as expected

@@ -45,7 +45,7 @@ BATCH_SIZE = 512
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.01
-EPS_DECAY = 0.999
+EPS_DECAY = 100000
 TARGET_UPDATE = 10
 MEMORY_SIZE = 50000
 STEP_OPTIMIZER_COUNT = 0     # global step counter for hard updates
@@ -186,9 +186,9 @@ def optimize_model(memory, policy_net, target_net, optimizer):
     
     optimizer.step()
 
-    # hard‐update of target_net every TARGET_HARD_UPDATE_INTERVAL steps
-    if STEP_OPTIMIZER_COUNT % config.TARGET_HARD_UPDATE_INTERVAL == 0:
-        target_net.load_state_dict(policy_net.state_dict())
+    # # hard‐update of target_net every TARGET_HARD_UPDATE_INTERVAL steps
+    # if STEP_OPTIMIZER_COUNT % config.TARGET_HARD_UPDATE_INTERVAL == 0:
+    #     target_net.load_state_dict(policy_net.state_dict())
 
     return loss.item()
 
@@ -338,6 +338,11 @@ def main():
                         reward += 1  # Win reward
                     else:
                         reward -= 1  # Loss penalty
+                if reward > 0:  # If DQN won
+                    # Bonus for winning quickly: higher for shorter games
+                    win_efficiency_bonus = (1.0 - (move_count / max_moves)) * config.WIN_EFFICIENCY_BONUS_SCALE
+                    reward += win_efficiency_bonus
+                # No explicit penalty for losing slowly, as -1 plus move_penalty handles it.
                 
                 # # Additional reward for winning quickly
                 # if reward > 0:  # Only for wins
@@ -395,8 +400,9 @@ def main():
                     # ns_ret = (state, prev_player, action, R_clipped, next_state, done)
                     # normalize the raw R before storing
                     _, _, a, R_raw, s1, d = ns_ret
-                    ret_norm.update(R_raw)
-                    R_norm = ret_norm.normalize(R_raw)
+                    # Use the already clipped reward R_clipped from NStepBuffer
+                    ret_norm.update(R_raw) # Note: R_raw here is R_clipped from NStepBuffer
+                    R_norm = ret_norm.normalize(R_raw) # Normalize the clipped value
                     memory.push(ns_ret[0], ns_ret[2], R_norm, ns_ret[4], ns_ret[5])
             
             # Optimize model and track loss
@@ -422,9 +428,9 @@ def main():
             state, prev_player, action, _, _, _ = seq[0]
             _, _, _, _, next_state, done = seq[-1]
             # normalize & push
-            ret_norm.update(R_raw)
-            R_norm = ret_norm.normalize(R_raw)
-            memory.push(state, action, R_norm, next_state, done)
+            ret_norm.update(R_clipped) # Ensure R_clipped is used here if you want consistency
+            R_norm = ret_norm.normalize(R_clipped) # Ensure R_clipped is used here if you want consistency
+            memory.push(state, action, R_norm, next_state, done) 
         # finally clear the buffer
         nstep_buffer.buffer.clear()
 

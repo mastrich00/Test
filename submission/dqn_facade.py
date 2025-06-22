@@ -1,6 +1,6 @@
 import torch
-from submission.dqn_model import DQN
-import dqn_config as config
+from submission.dqn_model import DuelingDQN as DQN
+import submission.dqn_config as config
 import hex_engine as engine
 from submission.dqn_utils import board_to_tensor
 

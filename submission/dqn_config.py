@@ -8,3 +8,4 @@ HUBER_DELTA = 1.0           # Huber loss parameter
 TARGET_HARD_UPDATE_INTERVAL = 500  # steps
 MOVE_PENALTY = -0.01
 WEIGHT_DECAY = 1e-5 
+WIN_EFFICIENCY_BONUS_SCALE = 0.5 # Scale for bonus for winning quickly (0.5 means up to +0.5 bonus)
